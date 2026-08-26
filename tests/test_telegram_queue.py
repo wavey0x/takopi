@@ -91,7 +91,6 @@ class FakeBot(BotClient):
         entities: list[dict[str, Any]] | None = None,
         parse_mode: str | None = None,
         reply_markup: dict | None = None,
-        rich_message: dict[str, Any] | None = None,
         *,
         wait: bool = True,
     ) -> Message | None:
@@ -100,7 +99,6 @@ class FakeBot(BotClient):
         _ = entities
         _ = parse_mode
         _ = reply_markup
-        _ = rich_message
         _ = wait
         self.calls.append("edit_message_text")
         self.edit_calls.append(text)
@@ -310,7 +308,6 @@ async def test_edits_coalesce_latest() -> None:
             entities: list[dict] | None = None,
             parse_mode: str | None = None,
             reply_markup: dict | None = None,
-            rich_message: dict[str, Any] | None = None,
             *,
             wait: bool = True,
         ) -> Message | None:

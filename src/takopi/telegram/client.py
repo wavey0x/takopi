@@ -10,7 +10,12 @@ import httpx
 
 from ..logging import get_logger
 from .api_models import Chat, ChatMember, File, ForumTopic, Message, Update, User
-from .client_api import BotClient, HttpBotClient, TelegramRetryAfter
+from .client_api import (
+    BotClient,
+    HttpBotClient,
+    RichMessageAttempt,
+    TelegramRetryAfter,
+)
 from .outbox import (
     DELETE_PRIORITY,
     EDIT_PRIORITY,
@@ -217,8 +222,8 @@ class TelegramClient:
         reply_markup: dict[str, Any] | None = None,
         *,
         replace_message_id: int | None = None,
-    ) -> Message | None:
-        async def execute() -> Message | None:
+    ) -> RichMessageAttempt:
+        async def execute() -> RichMessageAttempt:
             return await self._client.send_rich_message(
                 chat_id=chat_id,
                 rich_message=rich_message,
@@ -242,8 +247,36 @@ class TelegramClient:
             priority=SEND_PRIORITY,
             chat_id=chat_id,
         )
-        if replace_message_id is not None and result is not None:
+        if not isinstance(result, RichMessageAttempt):
+            return RichMessageAttempt.unknown()
+        if replace_message_id is not None and result.outcome == "delivered":
             await self.delete_message(chat_id=chat_id, message_id=replace_message_id)
+        return result
+
+    async def edit_rich_message_text(
+        self,
+        chat_id: int,
+        message_id: int,
+        rich_message: dict[str, Any],
+        reply_markup: dict[str, Any] | None = None,
+    ) -> RichMessageAttempt:
+        async def execute() -> RichMessageAttempt:
+            return await self._client.edit_rich_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                rich_message=rich_message,
+                reply_markup=reply_markup,
+            )
+
+        result = await self.enqueue_op(
+            key=("edit", chat_id, message_id),
+            label="edit_rich_message_text",
+            execute=execute,
+            priority=EDIT_PRIORITY,
+            chat_id=chat_id,
+        )
+        if not isinstance(result, RichMessageAttempt):
+            return RichMessageAttempt.unknown()
         return result
 
     async def send_document(
@@ -283,7 +316,6 @@ class TelegramClient:
         entities: list[dict] | None = None,
         parse_mode: str | None = None,
         reply_markup: dict[str, Any] | None = None,
-        rich_message: dict[str, Any] | None = None,
         *,
         wait: bool = True,
     ) -> Message | None:
@@ -295,7 +327,6 @@ class TelegramClient:
                 entities=entities,
                 parse_mode=parse_mode,
                 reply_markup=reply_markup,
-                rich_message=rich_message,
                 wait=wait,
             )
 

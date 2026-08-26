@@ -19,13 +19,13 @@ from ..settings import (
     TelegramTransportSettings,
 )
 from .client import BotClient
-from .render import MAX_BODY_CHARS, prepare_telegram, prepare_telegram_multi
-from .rich_message import (
-    RichMessagesMode,
-    build_input_rich_message,
-    rich_limit_exceeded,
-    should_use_rich_message,
+from .render import (
+    MAX_BODY_CHARS,
+    prepare_telegram,
+    prepare_telegram_multi,
+    trim_body,
 )
+from .rich_message import RichMessagesMode, build_input_rich_message
 from .types import TelegramCallbackQuery, TelegramIncomingMessage
 
 logger = get_logger(__name__)
@@ -104,6 +104,7 @@ class TelegramPresenter:
         parts = self._formatter.render_final_parts(
             state, elapsed_s=elapsed_s, status=status, answer=answer
         )
+        rich_parts: MarkdownParts | None = None
         if self._message_overflow == "split":
             payloads = prepare_telegram_multi(parts, max_body_chars=MAX_BODY_CHARS)
             text, entities = payloads[0]
@@ -123,7 +124,12 @@ class TelegramPresenter:
         else:
             text, entities = prepare_telegram(parts)
             extra = {"entities": entities, "reply_markup": CLEAR_MARKUP}
-        rich = self._rich_payload(parts, has_followups="followups" in extra)
+            rich_parts = MarkdownParts(
+                header=parts.header or "",
+                body=trim_body(parts.body),
+                footer=parts.footer,
+            )
+        rich = self._rich_payload(rich_parts)
         if rich is not None:
             extra["rich_message"] = rich
         # text/entities stay the sulguk rendering: every rich call falls back to
@@ -131,22 +137,11 @@ class TelegramPresenter:
         # regular message instead of dropping the answer.
         return RenderedMessage(text=text, extra=extra)
 
-    def _rich_payload(
-        self, parts: MarkdownParts, *, has_followups: bool
-    ) -> dict[str, object] | None:
+    def _rich_payload(self, parts: MarkdownParts | None) -> dict[str, object] | None:
+        if parts is None:
+            return None
         raw_md = assemble_markdown_parts(parts)
-        if not should_use_rich_message(raw_md, self._rich_messages):
-            return None
-        if has_followups:
-            # message_overflow = "split" was asked for; one oversized rich call
-            # is not what that means.
-            logger.debug("telegram.rich_message.skipped", reason="split")
-            return None
-        exceeded = rich_limit_exceeded(raw_md)
-        if exceeded is not None:
-            logger.debug("telegram.rich_message.skipped", reason=exceeded)
-            return None
-        return build_input_rich_message(raw_md)
+        return build_input_rich_message(raw_md, self._rich_messages)
 
 
 def _normalized_progress_label(label: str) -> str:
@@ -260,7 +255,7 @@ class TelegramTransport:
         sent = None
         rich_payload = message.extra.get("rich_message")
         if isinstance(rich_payload, dict):
-            sent = await self._bot.send_rich_message(
+            attempt = await self._bot.send_rich_message(
                 chat_id=chat_id,
                 rich_message=rich_payload,
                 reply_to_message_id=reply_to_message_id,
@@ -269,8 +264,10 @@ class TelegramTransport:
                 replace_message_id=replace_message_id,
                 disable_notification=not notify,
             )
-            if sent is None:
-                logger.warning("telegram.rich_message.send_failed", chat_id=chat_id)
+            sent = attempt.message
+            if attempt.outcome == "unknown":
+                logger.warning("telegram.rich_message.send_unknown", chat_id=chat_id)
+                return None
         if sent is None:
             sent = await self._bot.send_message(
                 chat_id=chat_id,
@@ -317,19 +314,17 @@ class TelegramTransport:
         followups = self._extract_followups(message)
         edited = None
         rich_payload = message.extra.get("rich_message")
-        # only when waiting: a fire-and-forget edit returns None either way, so
-        # there would be no way to tell a rejected rich payload from a queued one
         if isinstance(rich_payload, dict) and wait:
-            edited = await self._bot.edit_message_text(
+            attempt = await self._bot.edit_rich_message_text(
                 chat_id=chat_id,
                 message_id=message_id,
-                text=message.text,
                 rich_message=rich_payload,
                 reply_markup=reply_markup,
-                wait=wait,
             )
-            if edited is None:
-                logger.warning("telegram.rich_message.edit_failed", chat_id=chat_id)
+            edited = attempt.message
+            if attempt.outcome == "unknown":
+                logger.warning("telegram.rich_message.edit_unknown", chat_id=chat_id)
+                return ref
         if edited is None:
             edited = await self._bot.edit_message_text(
                 chat_id=chat_id,

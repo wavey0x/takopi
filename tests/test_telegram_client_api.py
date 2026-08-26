@@ -72,6 +72,10 @@ async def test_client_methods_build_params_and_decode() -> None:
         "getUpdates": [{"update_id": 1}],
         "getFile": {"file_path": "path"},
         "sendMessage": {"message_id": 1, "chat": {"id": 1, "type": "private"}},
+        "sendRichMessage": {
+            "message_id": 4,
+            "chat": {"id": 1, "type": "private"},
+        },
         "sendDocument": {"message_id": 2, "chat": {"id": 1, "type": "private"}},
         "editMessageText": {"message_id": 3, "chat": {"id": 1, "type": "private"}},
         "deleteMessage": True,
@@ -96,7 +100,9 @@ async def test_client_methods_build_params_and_decode() -> None:
             json: dict | None = None,
             data: dict | None = None,
             files: dict | None = None,
+            classify_failure: bool = False,
         ) -> object | None:
+            _ = classify_failure
             self.calls.append((method, json, data, files))
             return payloads.get(method)
 
@@ -119,6 +125,17 @@ async def test_client_methods_build_params_and_decode() -> None:
     )
     assert msg and msg.message_id == 1
 
+    rich = await client.send_rich_message(
+        1,
+        {"html": "<table bordered striped compact></table>"},
+        reply_to_message_id=2,
+        disable_notification=True,
+        message_thread_id=3,
+        reply_markup={"inline_keyboard": []},
+    )
+    assert rich.outcome == "delivered"
+    assert rich.message and rich.message.message_id == 4
+
     doc = await client.send_document(
         1,
         "file.txt",
@@ -139,6 +156,14 @@ async def test_client_methods_build_params_and_decode() -> None:
         reply_markup={"inline_keyboard": []},
     )
     assert edit and edit.message_id == 3
+
+    rich_edit = await client.edit_rich_message_text(
+        1,
+        2,
+        {"html": "<table bordered striped compact></table>"},
+        reply_markup={"inline_keyboard": []},
+    )
+    assert rich_edit.outcome == "delivered"
 
     assert await client.delete_message(1, 2) is True
     assert await client.set_my_commands(
@@ -163,12 +188,71 @@ async def test_client_methods_build_params_and_decode() -> None:
     assert send_call[1]["link_preview_options"] == {"is_disabled": True}
     assert send_call[1]["reply_markup"]
 
+    rich_call = next(call for call in client.calls if call[0] == "sendRichMessage")
+    assert rich_call[1]["rich_message"]["html"].startswith("<table")
+    assert rich_call[1]["reply_parameters"] == {
+        "message_id": 2,
+        "allow_sending_without_reply": True,
+    }
+
     doc_call = next(call for call in client.calls if call[0] == "sendDocument")
     assert doc_call[2]["caption"] == "doc"
     assert doc_call[3]["document"][0] == "file.txt"
 
     edit_call = next(call for call in client.calls if call[0] == "editMessageText")
     assert edit_call[1]["link_preview_options"] == {"is_disabled": True}
+    rich_edit_call = next(
+        call
+        for call in client.calls
+        if call[0] == "editMessageText"
+        and call[1] is not None
+        and "rich_message" in call[1]
+    )
+    assert "text" not in rich_edit_call[1]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("status", "payload", "outcome"),
+    [
+        (400, {"ok": False, "error_code": 400}, "rejected"),
+        (500, {"ok": False, "error_code": 500}, "unknown"),
+        (200, {"ok": False, "error_code": 500}, "unknown"),
+    ],
+)
+async def test_rich_message_failure_classification(
+    status: int, payload: dict, outcome: str
+) -> None:
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(status, json=payload, request=request)
+    )
+    http_client = httpx.AsyncClient(transport=transport)
+    client = HttpBotClient("token", http_client=http_client)
+
+    attempt = await client.send_rich_message(1, {"html": "<table></table>"})
+
+    assert attempt.outcome == outcome
+    assert attempt.message is None
+    await http_client.aclose()
+
+
+@pytest.mark.anyio
+async def test_rich_message_network_failure_is_unknown_not_retried() -> None:
+    calls = 0
+
+    def fail(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        raise httpx.ReadTimeout("ambiguous", request=request)
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(fail))
+    client = HttpBotClient("token", http_client=http_client)
+
+    attempt = await client.send_rich_message(1, {"html": "<table></table>"})
+
+    assert attempt.outcome == "unknown"
+    assert calls == 1
+    await http_client.aclose()
 
 
 @pytest.mark.anyio

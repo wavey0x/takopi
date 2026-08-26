@@ -131,6 +131,61 @@ async def test_telegram_network_error_raises_retry_after() -> None:
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("rich_status", "outcome", "expects_delete"),
+    [(200, "delivered", True), (400, "rejected", False)],
+)
+async def test_rich_replacement_deleted_only_after_confirmed_delivery(
+    rich_status: int, outcome: str, expects_delete: bool
+) -> None:
+    methods: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        method = request.url.path.rsplit("/", 1)[-1]
+        methods.append(method)
+        if method == "sendRichMessage" and rich_status == 200:
+            return httpx.Response(
+                200,
+                json={
+                    "ok": True,
+                    "result": {
+                        "message_id": 2,
+                        "chat": {"id": 1, "type": "private"},
+                    },
+                },
+                request=request,
+            )
+        if method == "deleteMessage":
+            return httpx.Response(
+                200, json={"ok": True, "result": True}, request=request
+            )
+        return httpx.Response(
+            rich_status,
+            json={"ok": False, "error_code": rich_status},
+            request=request,
+        )
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    tg = TelegramClient(
+        "123:abcDEF_ghij",
+        http_client=http_client,
+        private_chat_rps=0,
+    )
+    try:
+        attempt = await tg.send_rich_message(
+            1,
+            {"html": "<table></table>"},
+            replace_message_id=1,
+        )
+    finally:
+        await tg.close()
+        await http_client.aclose()
+
+    assert attempt.outcome == outcome
+    assert ("deleteMessage" in methods) is expects_delete
+
+
+@pytest.mark.anyio
 async def test_telegram_ok_false_returns_none() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(

@@ -1,132 +1,139 @@
-"""Telegram Bot API rich messages (sendRichMessage) helpers."""
+"""Safe Telegram Rich Message rendering for final answers."""
 
 from __future__ import annotations
 
-import re
 from typing import Any, Literal
+from urllib.parse import urlparse
+
+from markdown_it import MarkdownIt
+from markdown_it.token import Token
 
 RichMessagesMode = Literal["off", "auto", "always"]
 
-# Documented Rich Message limits (Bot API 10.1).
 MAX_RICH_CHARS = 32768
 MAX_RICH_BLOCKS = 500
 MAX_RICH_COLUMNS = 20
 
-# auto mode only reaches for rich markdown once an answer is substantial.
-_MIN_HEADING_ANSWER_CHARS = 400
+_BLOCK_TOKENS = {
+    "blockquote_open",
+    "bullet_list_open",
+    "code_block",
+    "fence",
+    "heading_open",
+    "hr",
+    "list_item_open",
+    "ordered_list_open",
+    "paragraph_open",
+    "table_open",
+    "tr_open",
+}
+_SAFE_LINK_SCHEMES = {"http", "https", "tg"}
 
-# GFM table: header row + separator |---|
-_GFM_TABLE_SEP_RE = re.compile(r"^\|[\s:\-|]+\|$")
-# Level-2+ heading at the start of a line (up to 3 spaces of indent, as in GFM).
-_HEADING_RE = re.compile(r"^ {0,3}#{2,6} \S")
+
+def _table_open(*_: object) -> str:
+    return "<table bordered striped compact>\n"
 
 
-def _prose_lines(text: str) -> list[str]:
-    """Lines outside fenced code blocks, where markdown structure is real."""
-    lines: list[str] = []
-    fence: str | None = None
-    for line in text.splitlines():
-        stripped = line.lstrip()
-        if fence is not None:
-            if stripped.startswith(fence):
-                fence = None
+def _section_tag(*_: object) -> str:
+    return ""
+
+
+def _cell_open(tokens: list[Token], idx: int, *_: object) -> str:
+    token = tokens[idx]
+    style = str(token.attrGet("style") or "")
+    align = style.removeprefix("text-align:")
+    if align in {"left", "center", "right"}:
+        return f'<{token.tag} align="{align}">'  # values are allowlisted above
+    return f"<{token.tag}>"
+
+
+def _new_parser() -> MarkdownIt:
+    parser = MarkdownIt("commonmark", {"html": False, "linkify": False}).enable("table")
+    rules = getattr(parser.renderer, "rules", None)
+    if not isinstance(rules, dict):
+        raise RuntimeError("markdown renderer does not support custom rules")
+    rules["table_open"] = _table_open
+    rules["thead_open"] = _section_tag
+    rules["thead_close"] = _section_tag
+    rules["tbody_open"] = _section_tag
+    rules["tbody_close"] = _section_tag
+    rules["th_open"] = _cell_open
+    rules["td_open"] = _cell_open
+    return parser
+
+
+_PARSER = _new_parser()
+
+
+def _safe_link(href: str) -> bool:
+    parsed = urlparse(href)
+    if parsed.scheme not in _SAFE_LINK_SCHEMES:
+        return False
+    if parsed.scheme in {"http", "https"}:
+        return bool(parsed.netloc)
+    return bool(parsed.netloc or parsed.path)
+
+
+def _sanitize_inline(children: list[Token]) -> list[Token]:
+    sanitized: list[Token] = []
+    links: list[bool] = []
+    for token in children:
+        if token.type == "image":
+            sanitized.append(Token("text", "", 0, content=token.content or "image"))
             continue
-        if stripped.startswith("```"):
-            fence = "```"
+        if token.type == "link_open":
+            keep = _safe_link(str(token.attrGet("href") or ""))
+            links.append(keep)
+            if keep:
+                sanitized.append(token)
             continue
-        if stripped.startswith("~~~"):
-            fence = "~~~"
+        if token.type == "link_close":
+            if links and links.pop():
+                sanitized.append(token)
             continue
-        lines.append(line)
-    return lines
+        if token.children:
+            token.children = _sanitize_inline(token.children)
+        sanitized.append(token)
+    return sanitized
 
 
-def _is_table_row(line: str) -> bool:
-    stripped = line.strip()
-    return len(stripped) > 1 and stripped.startswith("|") and stripped.endswith("|")
-
-
-def _row_columns(line: str) -> int:
-    return len(line.strip().strip("|").split("|"))
-
-
-def markdown_has_gfm_table(text: str) -> bool:
-    lines = _prose_lines(text)
-    for header, sep in zip(lines, lines[1:], strict=False):
-        if not _is_table_row(header):
-            continue
-        stripped_sep = sep.strip()
-        if "---" in stripped_sep and _GFM_TABLE_SEP_RE.match(stripped_sep):
-            return True
+def _table_too_wide(tokens: list[Token]) -> bool:
+    columns = 0
+    in_row = False
+    for token in tokens:
+        if token.type == "tr_open":
+            columns = 0
+            in_row = True
+        elif in_row and token.type in {"th_open", "td_open"}:
+            columns += 1
+        elif token.type == "tr_close":
+            if columns > MAX_RICH_COLUMNS:
+                return True
+            in_row = False
     return False
 
 
-def should_use_rich_message(text: str, mode: RichMessagesMode) -> bool:
-    if mode == "off":
+def _within_limits(tokens: list[Token], html: str) -> bool:
+    if len(html.encode("utf-8")) > MAX_RICH_CHARS:
         return False
-    stripped = text.strip()
-    if not stripped:
+    if sum(token.type in _BLOCK_TOKENS for token in tokens) > MAX_RICH_BLOCKS:
         return False
-    if mode == "always":
-        return True
-    # auto: tables (common agent reports) or level-2+ headings in long answers
-    if markdown_has_gfm_table(stripped):
-        return True
-    if len(stripped) <= _MIN_HEADING_ANSWER_CHARS:
-        return False
-    return any(_HEADING_RE.match(line) for line in _prose_lines(stripped))
+    return not _table_too_wide(tokens)
 
 
-def rich_limit_exceeded(markdown: str) -> str | None:
-    """Name the documented limit this markdown blows, or None when it fits.
-
-    Blocks are counted the way the Bot API docs describe them (table rows and
-    list items each count), so this is an approximation that errs high.
-    """
-    if len(markdown.encode("utf-8")) > MAX_RICH_CHARS:
-        return "chars"
-    blocks = 0
-    for line in _prose_lines(markdown):
-        if _is_table_row(line) and _row_columns(line) > MAX_RICH_COLUMNS:
-            return "columns"
-        if line.strip():
-            blocks += 1
-    if blocks > MAX_RICH_BLOCKS:
-        return "blocks"
-    return None
-
-
-def escape_raw_html(markdown: str) -> str:
-    """Neutralize tag openers outside code, matching what the sulguk path does.
-
-    Rich Markdown accepts arbitrary HTML, and agent answers are full of `Vec<T>`
-    and JSX fragments that are not meant as markup. Only `<` is escaped: `>` at
-    the start of a line is blockquote syntax.
-    """
-    out: list[str] = []
-    fence: str | None = None
-    for line in markdown.splitlines(keepends=True):
-        stripped = line.lstrip()
-        if fence is not None:
-            out.append(line)
-            if stripped.startswith(fence):
-                fence = None
-            continue
-        if stripped.startswith("```") or stripped.startswith("~~~"):
-            fence = "```" if stripped.startswith("```") else "~~~"
-            out.append(line)
-            continue
-        # odd segments are inline code spans and are left alone
-        segments = line.split("`")
-        out.append(
-            "`".join(
-                seg if index % 2 else seg.replace("<", "&lt;")
-                for index, seg in enumerate(segments)
-            )
-        )
-    return "".join(out)
-
-
-def build_input_rich_message(markdown: str) -> dict[str, Any]:
-    """InputRichMessage payload: Rich Markdown (GFM tables, headings, …)."""
-    return {"markdown": escape_raw_html(markdown)}
+def build_input_rich_message(
+    markdown: str, mode: RichMessagesMode
+) -> dict[str, Any] | None:
+    """Render trusted structure and inert content into Telegram Rich HTML."""
+    if mode == "off" or not markdown.strip():
+        return None
+    tokens = _PARSER.parse(markdown)
+    if mode == "auto" and not any(token.type == "table_open" for token in tokens):
+        return None
+    for token in tokens:
+        if token.children:
+            token.children = _sanitize_inline(token.children)
+    html = _PARSER.renderer.render(tokens, _PARSER.options, {})
+    if not _within_limits(tokens, html):
+        return None
+    return {"html": html}

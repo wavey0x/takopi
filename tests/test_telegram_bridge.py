@@ -396,9 +396,9 @@ def test_telegram_presenter_rich_keeps_regular_rendering() -> None:
     )
     rendered = _rich_final()
 
-    assert rendered.extra["rich_message"]["markdown"].endswith(
-        RICH_TABLE_ANSWER.strip()
-    )
+    html = rendered.extra["rich_message"]["html"]
+    assert "<table bordered striped compact>" in html
+    assert "<td>1</td>" in html
     # the fallback payload is byte-for-byte what rich_messages = "off" produces
     assert rendered.text == plain.text
     assert rendered.extra["entities"] == plain.extra["entities"]
@@ -415,6 +415,13 @@ def test_telegram_presenter_rich_skipped_when_splitting() -> None:
 
     assert rendered.extra.get("followups")
     assert "rich_message" not in rendered.extra
+
+
+def test_telegram_presenter_rich_uses_trimmed_body() -> None:
+    rendered = _rich_final(RICH_TABLE_ANSWER + "x" * (MAX_BODY_CHARS + 10))
+
+    assert "…" in rendered.extra["rich_message"]["html"]
+    assert "x" * MAX_BODY_CHARS not in rendered.extra["rich_message"]["html"]
 
 
 def test_telegram_presenter_rich_skipped_over_column_limit() -> None:
@@ -437,10 +444,12 @@ async def test_telegram_transport_edit_uses_rich_message() -> None:
     )
 
     assert edited is not None
-    assert len(bot.edit_calls) == 1
-    assert bot.edit_calls[0]["rich_message"]["markdown"].endswith(
-        RICH_TABLE_ANSWER.strip()
+    assert len(bot.rich_edit_calls) == 1
+    assert (
+        "<table bordered striped compact>"
+        in bot.rich_edit_calls[0]["rich_message"]["html"]
     )
+    assert not bot.edit_calls
     assert not bot.send_calls
 
 
@@ -457,10 +466,24 @@ async def test_telegram_transport_edit_falls_back_when_rich_rejected() -> None:
     )
 
     assert edited is not None
-    assert len(bot.edit_calls) == 2
-    assert bot.edit_calls[1]["rich_message"] is None
-    assert bot.edit_calls[1]["text"] == message.text
-    assert bot.edit_calls[1]["entities"] == message.extra["entities"]
+    assert len(bot.rich_edit_calls) == 1
+    assert len(bot.edit_calls) == 1
+    assert bot.edit_calls[0]["text"] == message.text
+    assert bot.edit_calls[0]["entities"] == message.extra["entities"]
+
+
+@pytest.mark.anyio
+async def test_telegram_transport_edit_does_not_duplicate_unknown_attempt() -> None:
+    bot = FakeBot()
+    bot.rich_unknown = True
+    transport = TelegramTransport(bot)
+    ref = MessageRef(channel_id=123, message_id=42)
+
+    edited = await transport.edit(ref=ref, message=_rich_final())
+
+    assert edited == ref
+    assert len(bot.rich_edit_calls) == 1
+    assert not bot.edit_calls
 
 
 @pytest.mark.anyio
@@ -477,6 +500,19 @@ async def test_telegram_transport_send_falls_back_when_rich_rejected() -> None:
     assert len(bot.send_calls) == 1
     assert bot.send_calls[0]["text"] == message.text
     assert bot.send_calls[0]["entities"] == message.extra["entities"]
+
+
+@pytest.mark.anyio
+async def test_telegram_transport_send_does_not_duplicate_unknown_attempt() -> None:
+    bot = FakeBot()
+    bot.rich_unknown = True
+    transport = TelegramTransport(bot)
+
+    sent = await transport.send(channel_id=123, message=_rich_final())
+
+    assert sent is None
+    assert len(bot.rich_calls) == 1
+    assert not bot.send_calls
 
 
 @pytest.mark.anyio
@@ -652,11 +688,9 @@ async def test_telegram_transport_edit_wait_false_returns_ref() -> None:
             entities: list[dict[str, Any]] | None = None,
             parse_mode: str | None = None,
             reply_markup: dict | None = None,
-            rich_message: dict[str, Any] | None = None,
             *,
             wait: bool = True,
         ) -> Message | None:
-            _ = rich_message
             self.edit_calls.append(
                 {
                     "chat_id": chat_id,

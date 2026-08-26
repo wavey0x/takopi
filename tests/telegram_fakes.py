@@ -18,6 +18,7 @@ from takopi.telegram.api_models import (
 )
 from takopi.telegram.bridge import TelegramBridgeConfig
 from takopi.telegram.client import BotClient
+from takopi.telegram.client_api import RichMessageAttempt
 from takopi.transport import MessageRef, RenderedMessage, SendOptions
 from takopi.transport_runtime import TransportRuntime
 
@@ -92,10 +93,12 @@ class FakeBot(BotClient):
         self.callback_calls: list[dict] = []
         self.send_calls: list[dict] = []
         self.rich_calls: list[dict] = []
+        self.rich_edit_calls: list[dict] = []
         self.document_calls: list[dict] = []
         self.edit_calls: list[dict] = []
         # set to reject rich messages, as an old Bot API server would
         self.rich_supported = True
+        self.rich_unknown = False
         self.edit_topic_calls: list[dict[str, Any]] = []
         self.delete_calls: list[dict] = []
 
@@ -156,7 +159,7 @@ class FakeBot(BotClient):
         reply_markup: dict | None = None,
         *,
         replace_message_id: int | None = None,
-    ) -> Message | None:
+    ) -> RichMessageAttempt:
         self.rich_calls.append(
             {
                 "chat_id": chat_id,
@@ -168,9 +171,36 @@ class FakeBot(BotClient):
                 "replace_message_id": replace_message_id,
             }
         )
+        if self.rich_unknown:
+            return RichMessageAttempt.unknown()
         if not self.rich_supported:
-            return None
-        return Message(message_id=3, chat=Chat(id=chat_id, type="private"))
+            return RichMessageAttempt.rejected()
+        return RichMessageAttempt.delivered(
+            Message(message_id=3, chat=Chat(id=chat_id, type="private"))
+        )
+
+    async def edit_rich_message_text(
+        self,
+        chat_id: int,
+        message_id: int,
+        rich_message: dict[str, Any],
+        reply_markup: dict | None = None,
+    ) -> RichMessageAttempt:
+        self.rich_edit_calls.append(
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "rich_message": rich_message,
+                "reply_markup": reply_markup,
+            }
+        )
+        if self.rich_unknown:
+            return RichMessageAttempt.unknown()
+        if not self.rich_supported:
+            return RichMessageAttempt.rejected()
+        return RichMessageAttempt.delivered(
+            Message(message_id=message_id, chat=Chat(id=chat_id, type="private"))
+        )
 
     async def send_document(
         self,
@@ -203,7 +233,6 @@ class FakeBot(BotClient):
         entities: list[dict[str, Any]] | None = None,
         parse_mode: str | None = None,
         reply_markup: dict | None = None,
-        rich_message: dict[str, Any] | None = None,
         *,
         wait: bool = True,
     ) -> Message | None:
@@ -215,12 +244,9 @@ class FakeBot(BotClient):
                 "entities": entities,
                 "parse_mode": parse_mode,
                 "reply_markup": reply_markup,
-                "rich_message": rich_message,
                 "wait": wait,
             }
         )
-        if rich_message is not None and not self.rich_supported:
-            return None
         return Message(message_id=message_id, chat=Chat(id=chat_id, type="private"))
 
     async def delete_message(self, chat_id: int, message_id: int) -> bool:

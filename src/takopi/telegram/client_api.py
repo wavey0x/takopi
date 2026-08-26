@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Protocol, TypeVar
+from dataclasses import dataclass
+from typing import Any, Literal, Protocol, TypeVar
 
 import httpx
 import msgspec
@@ -12,6 +13,30 @@ logger = get_logger(__name__)
 
 T = TypeVar("T")
 _NETWORK_RETRY_AFTER_S = 2.0
+RichMessageOutcome = Literal["delivered", "rejected", "unknown"]
+
+
+@dataclass(frozen=True, slots=True)
+class RichMessageAttempt:
+    outcome: RichMessageOutcome
+    message: Message | None = None
+
+    @classmethod
+    def delivered(cls, message: Message) -> RichMessageAttempt:
+        return cls("delivered", message)
+
+    @classmethod
+    def rejected(cls) -> RichMessageAttempt:
+        return cls("rejected")
+
+    @classmethod
+    def unknown(cls) -> RichMessageAttempt:
+        return cls("unknown")
+
+
+@dataclass(frozen=True, slots=True)
+class _RequestFailure:
+    outcome: Literal["rejected", "unknown"]
 
 
 class RetryAfter(Exception):
@@ -72,7 +97,15 @@ class BotClient(Protocol):
         reply_markup: dict[str, Any] | None = None,
         *,
         replace_message_id: int | None = None,
-    ) -> Message | None: ...
+    ) -> RichMessageAttempt: ...
+
+    async def edit_rich_message_text(
+        self,
+        chat_id: int,
+        message_id: int,
+        rich_message: dict[str, Any],
+        reply_markup: dict[str, Any] | None = None,
+    ) -> RichMessageAttempt: ...
 
     async def send_document(
         self,
@@ -93,7 +126,6 @@ class BotClient(Protocol):
         entities: list[dict] | None = None,
         parse_mode: str | None = None,
         reply_markup: dict[str, Any] | None = None,
-        rich_message: dict[str, Any] | None = None,
         *,
         wait: bool = True,
     ) -> Message | None: ...
@@ -166,7 +198,8 @@ class HttpBotClient:
         method: str,
         resp: httpx.Response,
         payload: Any,
-    ) -> Any | None:
+        classify_failure: bool = False,
+    ) -> Any | _RequestFailure | None:
         if not isinstance(payload, dict):
             logger.error(
                 "telegram.invalid_payload",
@@ -174,7 +207,7 @@ class HttpBotClient:
                 url=str(resp.request.url),
                 payload=payload,
             )
-            return None
+            return _RequestFailure("unknown") if classify_failure else None
 
         if not payload.get("ok"):
             if payload.get("error_code") == 429:
@@ -193,6 +226,14 @@ class HttpBotClient:
                 url=str(resp.request.url),
                 payload=payload,
             )
+            if classify_failure:
+                error_code = payload.get("error_code")
+                outcome = (
+                    "unknown"
+                    if isinstance(error_code, int) and error_code >= 500
+                    else "rejected"
+                )
+                return _RequestFailure(outcome)
             return None
 
         logger.debug("telegram.response", method=method, payload=payload)
@@ -205,7 +246,8 @@ class HttpBotClient:
         json: dict[str, Any] | None = None,
         data: dict[str, Any] | None = None,
         files: dict[str, Any] | None = None,
-    ) -> Any | None:
+        classify_failure: bool = False,
+    ) -> Any | _RequestFailure | None:
         request_payload = json if json is not None else data
         logger.debug("telegram.request", method=method, payload=request_payload)
         try:
@@ -225,6 +267,8 @@ class HttpBotClient:
                 error=error,
                 error_type=exc.__class__.__name__,
             )
+            if classify_failure:
+                return _RequestFailure("unknown")
             raise TelegramRetryAfter(_NETWORK_RETRY_AFTER_S, error) from exc
 
         try:
@@ -256,6 +300,9 @@ class HttpBotClient:
                 error=str(exc),
                 body=body,
             )
+            if classify_failure:
+                outcome = "rejected" if 400 <= resp.status_code < 500 else "unknown"
+                return _RequestFailure(outcome)
             return None
 
         try:
@@ -271,12 +318,13 @@ class HttpBotClient:
                 error_type=exc.__class__.__name__,
                 body=body,
             )
-            return None
+            return _RequestFailure("unknown") if classify_failure else None
 
         return self._parse_telegram_envelope(
             method=method,
             resp=resp,
             payload=response_payload,
+            classify_failure=classify_failure,
         )
 
     def _decode_result(
@@ -298,6 +346,19 @@ class HttpBotClient:
                 error_type=exc.__class__.__name__,
             )
             return None
+
+    def _decode_rich_attempt(
+        self,
+        *,
+        method: str,
+        payload: Any | _RequestFailure | None,
+    ) -> RichMessageAttempt:
+        if isinstance(payload, _RequestFailure):
+            return RichMessageAttempt(payload.outcome)
+        message = self._decode_result(method=method, payload=payload, model=Message)
+        if message is None:
+            return RichMessageAttempt.unknown()
+        return RichMessageAttempt.delivered(message)
 
     async def _post(self, method: str, json_data: dict[str, Any]) -> Any | None:
         return await self._request(method, json=json_data)
@@ -424,7 +485,7 @@ class HttpBotClient:
         reply_markup: dict[str, Any] | None = None,
         *,
         replace_message_id: int | None = None,
-    ) -> Message | None:
+    ) -> RichMessageAttempt:
         params: dict[str, Any] = {
             "chat_id": chat_id,
             "rich_message": rich_message,
@@ -440,10 +501,30 @@ class HttpBotClient:
             }
         if reply_markup is not None:
             params["reply_markup"] = reply_markup
-        result = await self._post("sendRichMessage", params)
-        return self._decode_result(
-            method="sendRichMessage", payload=result, model=Message
+        result = await self._request(
+            "sendRichMessage", json=params, classify_failure=True
         )
+        return self._decode_rich_attempt(method="sendRichMessage", payload=result)
+
+    async def edit_rich_message_text(
+        self,
+        chat_id: int,
+        message_id: int,
+        rich_message: dict[str, Any],
+        reply_markup: dict[str, Any] | None = None,
+    ) -> RichMessageAttempt:
+        params: dict[str, Any] = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "rich_message": rich_message,
+            "link_preview_options": {"is_disabled": True},
+        }
+        if reply_markup is not None:
+            params["reply_markup"] = reply_markup
+        result = await self._request(
+            "editMessageText", json=params, classify_failure=True
+        )
+        return self._decode_rich_attempt(method="editMessageText", payload=result)
 
     async def send_document(
         self,
@@ -479,7 +560,6 @@ class HttpBotClient:
         entities: list[dict] | None = None,
         parse_mode: str | None = None,
         reply_markup: dict[str, Any] | None = None,
-        rich_message: dict[str, Any] | None = None,
         *,
         wait: bool = True,
     ) -> Message | None:
@@ -487,14 +567,11 @@ class HttpBotClient:
             "chat_id": chat_id,
             "message_id": message_id,
         }
-        if rich_message is not None:
-            params["rich_message"] = rich_message
-        else:
-            params["text"] = text
-            if entities is not None:
-                params["entities"] = entities
-            if parse_mode is not None:
-                params["parse_mode"] = parse_mode
+        params["text"] = text
+        if entities is not None:
+            params["entities"] = entities
+        if parse_mode is not None:
+            params["parse_mode"] = parse_mode
         params["link_preview_options"] = {"is_disabled": True}
         if reply_markup is not None:
             params["reply_markup"] = reply_markup
