@@ -16,6 +16,7 @@ from .api_schemas import (
     Video,
 )
 from .client_api import BotClient
+from .rich_message import rich_message_to_plain
 from .types import (
     TelegramCallbackQuery,
     TelegramDocument,
@@ -102,7 +103,9 @@ def _parse_incoming_message(
         return None
     reply = msg.reply_to_message
     reply_to_message_id = reply.message_id if reply is not None else None
-    reply_to_text = reply.text if reply is not None else None
+    reply_to_text = None
+    if reply is not None:
+        reply_to_text = reply.text or rich_message_to_plain(reply.rich_message)
     reply_to_is_bot = (
         reply.from_.is_bot if reply is not None and reply.from_ is not None else None
     )

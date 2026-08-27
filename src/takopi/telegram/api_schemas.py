@@ -5,6 +5,8 @@ Derived from telegram-api.html in the repository.
 
 from __future__ import annotations
 
+from typing import Any
+
 import msgspec
 
 __all__ = [
@@ -18,6 +20,7 @@ __all__ = [
     "Message",
     "MessageReply",
     "PhotoSize",
+    "RichMessage",
     "Sticker",
     "Update",
     "User",
@@ -79,9 +82,14 @@ class Sticker(msgspec.Struct, forbid_unknown_fields=False):
     file_size: int | None = None
 
 
+class RichMessage(msgspec.Struct, forbid_unknown_fields=False):
+    blocks: list[dict[str, Any]]
+
+
 class MessageReply(msgspec.Struct, forbid_unknown_fields=False):
     message_id: int
     text: str | None = None
+    rich_message: RichMessage | None = None
     from_: User | None = msgspec.field(default=None, name="from")
 
 
@@ -91,6 +99,7 @@ class Message(msgspec.Struct, forbid_unknown_fields=False):
     message_thread_id: int | None = None
     from_: User | None = msgspec.field(default=None, name="from")
     text: str | None = None
+    rich_message: RichMessage | None = None
     caption: str | None = None
     reply_to_message: MessageReply | None = None
     forward_from: User | None = None

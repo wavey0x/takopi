@@ -1,6 +1,8 @@
+from takopi.telegram.api_models import RichMessage
 from takopi.telegram.rich_message import (
     MAX_RICH_CHARS,
     build_input_rich_message,
+    rich_message_to_plain,
 )
 
 TABLE = "| A | B |\n|:---|---:|\n| 1 | 2 |\n"
@@ -64,3 +66,44 @@ def test_rich_message_limits_fail_closed() -> None:
         TABLE + "\n" + "\n\n".join(f"paragraph {index}" for index in range(510))
     )
     assert build_input_rich_message(too_many_blocks, "auto") is None
+
+
+def test_rich_message_plain_text_preserves_visible_structure() -> None:
+    message = RichMessage(
+        blocks=[
+            {
+                "type": "paragraph",
+                "text": ["done ", {"type": "bold", "text": "now"}],
+            },
+            {
+                "type": "table",
+                "cells": [
+                    [{"text": "asset"}, {"text": "amount"}],
+                    [{"text": "USDC"}, {"text": {"type": "code", "text": "42"}}],
+                ],
+            },
+            {
+                "type": "paragraph",
+                "text": [
+                    {"type": "code", "text": "ctx: proj @reply"},
+                    "\n",
+                    {"type": "code", "text": "codex resume thread-123"},
+                ],
+            },
+        ]
+    )
+
+    assert rich_message_to_plain(message) == (
+        "done now\nasset | amount\nUSDC | 42\nctx: proj @reply\ncodex resume thread-123"
+    )
+
+
+def test_rich_message_plain_text_ignores_non_visible_metadata() -> None:
+    message = RichMessage(
+        blocks=[
+            {"type": "future", "url": "codex resume not-a-token"},
+            {"type": "paragraph", "text": {"type": "future", "id": "hidden"}},
+        ]
+    )
+
+    assert rich_message_to_plain(message) is None

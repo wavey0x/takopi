@@ -8,6 +8,8 @@ from urllib.parse import urlparse
 from markdown_it import MarkdownIt
 from markdown_it.token import Token
 
+from .api_schemas import RichMessage
+
 RichMessagesMode = Literal["off", "auto", "always"]
 
 MAX_RICH_CHARS = 32768
@@ -119,6 +121,78 @@ def _within_limits(tokens: list[Token], html: str) -> bool:
     if sum(token.type in _BLOCK_TOKENS for token in tokens) > MAX_RICH_BLOCKS:
         return False
     return not _table_too_wide(tokens)
+
+
+def _join_lines(parts: list[str]) -> str:
+    return "\n".join(part for part in parts if part)
+
+
+def _rich_text_to_plain(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "".join(_rich_text_to_plain(item) for item in value)
+    if not isinstance(value, dict):
+        return ""
+
+    kind = value.get("type")
+    if kind == "custom_emoji":
+        alternative = value.get("alternative_text")
+        return alternative if isinstance(alternative, str) else ""
+    if kind == "mathematical_expression":
+        expression = value.get("expression")
+        return expression if isinstance(expression, str) else ""
+    if kind == "button":
+        button = value.get("button")
+        return (
+            _rich_text_to_plain(button.get("text")) if isinstance(button, dict) else ""
+        )
+    return _rich_text_to_plain(value.get("text"))
+
+
+def _nodes_to_plain(nodes: Any) -> str:
+    if not isinstance(nodes, list):
+        return ""
+    return _join_lines([_node_to_plain(node) for node in nodes])
+
+
+def _table_to_plain(rows: Any) -> str:
+    if not isinstance(rows, list):
+        return ""
+    return _join_lines(
+        [
+            " | ".join(_node_to_plain(cell) for cell in row)
+            for row in rows
+            if isinstance(row, list)
+        ]
+    )
+
+
+def _node_to_plain(node: Any) -> str:
+    if not isinstance(node, dict):
+        return ""
+    expression = node.get("expression")
+    return _join_lines(
+        [
+            _rich_text_to_plain(node.get("summary")),
+            _rich_text_to_plain(node.get("text")),
+            _nodes_to_plain(node.get("blocks")),
+            _nodes_to_plain(node.get("items")),
+            _node_to_plain(node.get("caption")),
+            _table_to_plain(node.get("cells")),
+            _rich_text_to_plain(node.get("credit")),
+            _nodes_to_plain(node.get("buttons")),
+            expression if isinstance(expression, str) else "",
+        ]
+    )
+
+
+def rich_message_to_plain(message: RichMessage | None) -> str | None:
+    """Recover visible text from a Telegram Rich Message reply."""
+    if message is None:
+        return None
+    text = _nodes_to_plain(message.blocks)
+    return text if text.strip() else None
 
 
 def build_input_rich_message(

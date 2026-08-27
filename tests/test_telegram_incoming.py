@@ -1,3 +1,5 @@
+import msgspec
+
 from takopi.telegram import (
     TelegramCallbackQuery,
     TelegramIncomingMessage,
@@ -11,12 +13,14 @@ from takopi.telegram.api_models import (
     Message,
     MessageReply,
     PhotoSize,
+    RichMessage,
     Sticker,
     Update,
     User,
     Video,
     Voice,
 )
+from takopi.telegram.api_schemas import decode_update
 
 
 def test_parse_incoming_update_maps_fields() -> None:
@@ -56,6 +60,70 @@ def test_parse_incoming_update_maps_fields() -> None:
     assert msg.raw
     assert msg.raw["message_id"] == 10
     assert msg.update_id == 1
+
+
+def test_parse_incoming_update_recovers_rich_reply_text() -> None:
+    payload = {
+        "update_id": 2,
+        "message": {
+            "message_id": 11,
+            "text": "continue this",
+            "chat": {"id": 123, "type": "supergroup"},
+            "from": {"id": 99},
+            "reply_to_message": {
+                "message_id": 10,
+                "from": {"id": 77, "is_bot": True},
+                "rich_message": {
+                    "blocks": [
+                        {
+                            "type": "paragraph",
+                            "text": [
+                                {"type": "code", "text": "ctx: proj @reply"},
+                                "\n",
+                                {
+                                    "type": "code",
+                                    "text": "codex resume thread-123",
+                                },
+                            ],
+                        }
+                    ]
+                },
+            },
+        },
+    }
+
+    msg = parse_incoming_update(
+        decode_update(msgspec.json.encode(payload)), chat_id=123
+    )
+
+    assert msg is not None
+    assert isinstance(msg, TelegramIncomingMessage)
+    assert msg.reply_to_message_id == 10
+    assert msg.reply_to_text == "ctx: proj @reply\ncodex resume thread-123"
+
+
+def test_parse_incoming_update_prefers_plain_reply_text() -> None:
+    update = Update(
+        update_id=1,
+        message=Message(
+            message_id=10,
+            text="hello",
+            chat=Chat(id=123, type="private"),
+            reply_to_message=MessageReply(
+                message_id=5,
+                text="plain",
+                rich_message=RichMessage(
+                    blocks=[{"type": "paragraph", "text": "rich"}]
+                ),
+            ),
+        ),
+    )
+
+    msg = parse_incoming_update(update, chat_id=123)
+
+    assert msg is not None
+    assert isinstance(msg, TelegramIncomingMessage)
+    assert msg.reply_to_text == "plain"
 
 
 def test_parse_incoming_update_ignores_implicit_topic_reply() -> None:
