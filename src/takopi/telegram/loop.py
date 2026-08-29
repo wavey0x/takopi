@@ -1304,6 +1304,7 @@ async def run_main_loop(
                         reply_text=msg.reply_to_text,
                         ambient_context=ambient_context,
                         chat_id=msg.chat_id,
+                        addressed_username=state.bot_username,
                     )
                 except DirectiveError as exc:
                     await reply(text=f"error:\n{exc}")
@@ -1495,6 +1496,7 @@ async def run_main_loop(
                         reply_text=msg.reply_to_text,
                         ambient_context=pending.ambient_context,
                         chat_id=msg.chat_id,
+                        addressed_username=state.bot_username,
                     )
                 except DirectiveError as exc:
                     await reply(text=f"error:\n{exc}")

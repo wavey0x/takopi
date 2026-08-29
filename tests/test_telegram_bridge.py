@@ -149,6 +149,17 @@ def test_parse_directives_bot_suffix() -> None:
     assert directives.prompt == "hi"
 
 
+def test_parse_directives_treats_telegram_bot_mention_as_addressing() -> None:
+    directives = parse_directives(
+        "@bunny_agent_bot @feat/report investigate",
+        engine_ids=("codex",),
+        projects=_empty_projects(),
+        addressed_username="bunny_agent_bot",
+    )
+    assert directives.branch == "feat/report"
+    assert directives.prompt == "investigate"
+
+
 def test_parse_directives_only_first_non_empty_line() -> None:
     directives = parse_directives(
         "hello\n/claude hi",

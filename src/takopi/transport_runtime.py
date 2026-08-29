@@ -179,11 +179,13 @@ class TransportRuntime:
         reply_text: str | None,
         ambient_context: RunContext | None = None,
         chat_id: int | None = None,
+        addressed_username: str | None = None,
     ) -> ResolvedMessage:
         directives = parse_directives(
             text,
             engine_ids=self._router.engine_ids,
             projects=self._projects,
+            addressed_username=addressed_username,
         )
         reply_ctx = parse_context_line(reply_text, projects=self._projects)
         resume_token = self._router.resolve_resume(directives.prompt, reply_text)

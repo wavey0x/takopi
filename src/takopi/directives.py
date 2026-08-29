@@ -24,6 +24,7 @@ def parse_directives(
     *,
     engine_ids: tuple[EngineId, ...],
     projects: ProjectsConfig,
+    addressed_username: str | None = None,
 ) -> ParsedDirectives:
     if not text:
         return ParsedDirectives(prompt="", engine=None, project=None, branch=None)
@@ -73,6 +74,12 @@ def parse_directives(
             value = token[1:]
             if not value:
                 break
+            if (
+                addressed_username is not None
+                and value.casefold() == addressed_username.lstrip("@").casefold()
+            ):
+                consumed += 1
+                continue
             if branch is not None:
                 raise DirectiveError("multiple @branch directives")
             branch = value

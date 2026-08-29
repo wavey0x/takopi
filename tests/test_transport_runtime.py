@@ -129,6 +129,21 @@ def test_resolve_message_branch_directive_merges_with_ambient_project() -> None:
     assert resolved.context_source == "directives"
 
 
+def test_resolve_message_does_not_treat_bot_username_as_branch() -> None:
+    runtime = _make_runtime()
+
+    resolved = runtime.resolve_message(
+        text="@war_room_agent_bot investigate",
+        reply_text=None,
+        ambient_context=RunContext(project="proj"),
+        addressed_username="war_room_agent_bot",
+    )
+
+    assert resolved.prompt == "investigate"
+    assert resolved.context == RunContext(project="proj", branch=None)
+    assert resolved.context_source == "ambient"
+
+
 def test_resolve_message_project_directive_clears_ambient_branch() -> None:
     codex = ScriptRunner([Return(answer="ok")], engine="codex")
     router = AutoRouter(
