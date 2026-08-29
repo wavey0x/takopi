@@ -137,6 +137,7 @@ class ProjectSettings(BaseModel):
 
     path: NonEmptyStr
     worktrees_dir: NonEmptyStr = ".worktrees"
+    worktrees_enabled: bool = True
     default_engine: NonEmptyStr | None = None
     worktree_base: NonEmptyStr | None = None
     chat_id: ChatId | None = None
@@ -279,6 +280,7 @@ class TakopiSettings(BaseSettings):
                 alias=alias,
                 path=path,
                 worktrees_dir=worktrees_dir,
+                worktrees_enabled=entry.worktrees_enabled,
                 default_engine=default_engine,
                 worktree_base=worktree_base,
                 chat_id=chat_id,

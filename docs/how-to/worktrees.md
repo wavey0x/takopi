@@ -2,6 +2,9 @@
 
 Use `@branch` to run tasks in a dedicated git worktree for that branch.
 
+Set `worktrees_enabled = false` on a fixed-directory project to reject branch
+routing without disabling the project itself.
+
 ## Enable worktree-based runs for a project
 
 Add a `worktrees_dir` (and optionally a base branch) to the project:

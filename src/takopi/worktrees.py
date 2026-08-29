@@ -29,6 +29,8 @@ def resolve_run_cwd(
         raise WorktreeError(f"unknown project {context.project!r}")
     if context.branch is None:
         return project.path
+    if not project.worktrees_enabled:
+        raise WorktreeError(f"worktrees are disabled for project {project.alias!r}")
     branch = _sanitize_branch(context.branch)
     if _matches_project_branch(project.path, branch):
         return project.path

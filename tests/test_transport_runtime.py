@@ -7,7 +7,11 @@ from takopi.runners.mock import Return, ScriptRunner
 from takopi.transport_runtime import TransportRuntime
 
 
-def _make_runtime(*, project_default_engine: str | None = None) -> TransportRuntime:
+def _make_runtime(
+    *,
+    project_default_engine: str | None = None,
+    worktrees_enabled: bool = True,
+) -> TransportRuntime:
     codex = ScriptRunner([Return(answer="ok")], engine="codex")
     pi = ScriptRunner([Return(answer="ok")], engine="pi")
     router = AutoRouter(
@@ -21,6 +25,7 @@ def _make_runtime(*, project_default_engine: str | None = None) -> TransportRunt
         alias="proj",
         path=Path("."),
         worktrees_dir=Path(".worktrees"),
+        worktrees_enabled=worktrees_enabled,
         default_engine=project_default_engine,
     )
     projects = ProjectsConfig(projects={"proj": project}, default_project=None)
@@ -130,7 +135,7 @@ def test_resolve_message_branch_directive_merges_with_ambient_project() -> None:
 
 
 def test_resolve_message_does_not_treat_bot_username_as_branch() -> None:
-    runtime = _make_runtime()
+    runtime = _make_runtime(worktrees_enabled=False)
 
     resolved = runtime.resolve_message(
         text="@war_room_agent_bot investigate",
@@ -142,6 +147,7 @@ def test_resolve_message_does_not_treat_bot_username_as_branch() -> None:
     assert resolved.prompt == "investigate"
     assert resolved.context == RunContext(project="proj", branch=None)
     assert resolved.context_source == "ambient"
+    assert runtime.resolve_run_cwd(resolved.context) == Path(".")
 
 
 def test_resolve_message_project_directive_clears_ambient_branch() -> None:

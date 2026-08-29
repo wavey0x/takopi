@@ -27,6 +27,35 @@ def test_resolve_run_cwd_uses_project_root(tmp_path: Path) -> None:
     assert resolve_run_cwd(ctx, projects=projects) == tmp_path
 
 
+def test_resolve_run_cwd_rejects_branch_when_worktrees_disabled(
+    monkeypatch, tmp_path: Path
+) -> None:
+    projects = ProjectsConfig(
+        projects={
+            "z80": ProjectConfig(
+                alias="z80",
+                path=tmp_path,
+                worktrees_dir=Path(".worktrees"),
+                worktrees_enabled=False,
+            )
+        }
+    )
+
+    def _unexpected(*_args, **_kwargs):
+        raise AssertionError("worktree creation attempted")
+
+    monkeypatch.setattr(
+        "takopi.worktrees.ensure_worktree",
+        _unexpected,
+    )
+
+    with pytest.raises(WorktreeError, match="worktrees are disabled"):
+        resolve_run_cwd(
+            RunContext(project="z80", branch="feat/report"),
+            projects=projects,
+        )
+
+
 def test_resolve_run_cwd_rejects_invalid_branch(tmp_path: Path) -> None:
     projects = _projects_config(tmp_path)
     ctx = RunContext(project="z80", branch="../oops")

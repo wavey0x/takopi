@@ -35,6 +35,24 @@ def test_parse_projects_default_project_must_exist() -> None:
         )
 
 
+def test_parse_projects_can_disable_worktrees() -> None:
+    config = {
+        **_base_config(),
+        "projects": {
+            "z80": {"path": "/tmp/repo", "worktrees_enabled": False}
+        },
+    }
+    settings = TakopiSettings.model_validate(config)
+
+    projects = settings.to_projects_config(
+        config_path=Path("takopi.toml"),
+        engine_ids=["codex"],
+        reserved=RESERVED_CHAT_COMMANDS,
+    )
+
+    assert projects.projects["z80"].worktrees_enabled is False
+
+
 def test_init_writes_project(monkeypatch, tmp_path) -> None:
     config_path = tmp_path / "takopi.toml"
     config_path.write_text(

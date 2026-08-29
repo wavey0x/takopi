@@ -110,6 +110,7 @@ File size limits (not configurable):
 |-----|------|---------|-------|
 | `path` | string | (required) | Repo root (expands `~`). Relative paths are resolved against the config directory. |
 | `worktrees_dir` | string | `".worktrees"` | Worktree root (relative to `path` unless absolute). |
+| `worktrees_enabled` | bool | `true` | Whether `@branch` may select or create worktrees. |
 | `default_engine` | string\|null | `null` | Per-project default engine. |
 | `worktree_base` | string\|null | `null` | Base branch for new worktrees. |
 | `chat_id` | int\|null | `null` | Bind a Telegram chat to this project. |

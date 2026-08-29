@@ -63,6 +63,7 @@ class ProjectConfig:
     alias: str
     path: Path
     worktrees_dir: Path
+    worktrees_enabled: bool = True
     default_engine: str | None = None
     worktree_base: str | None = None
     chat_id: int | None = None
