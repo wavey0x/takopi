@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import anyio
 import pytest
@@ -8,7 +9,7 @@ import pytest
 from takopi.backends import EngineConfig
 from takopi.config import ConfigError
 from takopi.events import EventFactory
-from takopi.model import ActionEvent, CompletedEvent, StartedEvent
+from takopi.model import ActionEvent, CompletedEvent, ResumeToken, StartedEvent
 from takopi.runners.codex import (
     _AgentMessageSummary,
     _AppServerClient,
@@ -29,6 +30,97 @@ from takopi.runners.codex import (
     translate_codex_event,
 )
 from takopi.schemas import codex as codex_schema
+from takopi.runners.run_options import EngineRunOptions, apply_run_options
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("resume_existing", [False, True])
+async def test_app_server_model_clear_inherits_defaults_without_replacing_thread(
+    monkeypatch: pytest.MonkeyPatch, resume_existing: bool
+) -> None:
+    runner = AppServerCodexRunner(codex_cmd="codex", extra_args=[])
+    defaults = {"model": "instance-model", "model_reasoning_effort": "xhigh"}
+    turns: list[dict[str, Any]] = []
+    resumes: list[str] = []
+    starts: list[dict[str, Any]] = []
+
+    class BeforeModelTurn(Exception):
+        pass
+
+    async def start() -> None:
+        pass
+
+    async def request(method: str, params: dict[str, Any]) -> dict[str, Any]:
+        if method == "config/read":
+            assert params["includeLayers"] is False
+            assert params["cwd"] == str(Path.cwd())
+            return {"config": defaults.copy()}
+        if method == "thread/resume":
+            resumes.append(params["threadId"])
+            return {"thread": {"id": "thread-1"}, "model": "historical-model"}
+        if method == "thread/start":
+            starts.append(params)
+            return {"thread": {"id": "thread-1"}}
+        assert method == "turn/start"
+        turns.append(params)
+        raise BeforeModelTurn
+
+    monkeypatch.setattr(runner._client, "start", start)
+    monkeypatch.setattr(runner._client, "request", request)
+    token = ResumeToken(engine="codex", value="thread-1")
+    options = [
+        EngineRunOptions(model="chat-model", reasoning="low"),
+        EngineRunOptions(reasoning="low"),
+        None,
+        None,
+    ]
+    for index, override in enumerate(options):
+        if index == 2:
+            defaults["model"] = "updated-instance-model"
+        if index == 3:
+            defaults.clear()
+        resume = token if resume_existing or index else None
+        with apply_run_options(override), pytest.raises(BeforeModelTurn):
+            async for _ in runner.run_impl("same conversation", resume):
+                pass
+
+    assert [turn.get("model") for turn in turns] == [
+        "chat-model",
+        "instance-model",
+        "updated-instance-model",
+        None,
+    ]
+    assert [turn.get("effort") for turn in turns] == ["low", "low", "xhigh", None]
+    assert all(turn["threadId"] == "thread-1" for turn in turns)
+    assert resumes == (["thread-1"] if resume_existing else [])
+    assert starts == (
+        [] if resume_existing else [{"cwd": str(Path.cwd()), "model": "chat-model"}]
+    )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("settings", [None, {}, {"config": {"model": 12}}])
+async def test_app_server_invalid_defaults_fail_before_loading_or_starting_a_turn(
+    monkeypatch: pytest.MonkeyPatch, settings: object
+) -> None:
+    runner = AppServerCodexRunner(codex_cmd="codex", extra_args=[])
+    requests: list[str] = []
+
+    async def start() -> None:
+        pass
+
+    async def request(method: str, params: dict[str, Any]) -> object:
+        requests.append(method)
+        return settings
+
+    monkeypatch.setattr(runner._client, "start", start)
+    monkeypatch.setattr(runner._client, "request", request)
+    with pytest.raises(RuntimeError, match="config/read returned"):
+        async for _ in runner.run_impl(
+            "same conversation", ResumeToken(engine="codex", value="thread-1")
+        ):
+            pass
+    assert requests == ["config/read"]
 
 
 def test_codex_helper_functions() -> None:
@@ -311,6 +403,8 @@ async def test_app_server_runner_raises_on_turn_stream_eof(
         "        send({'id': req_id, 'result': {'serverInfo': {'name': 'fake'}}})\n"
         "    elif method == 'initialized':\n"
         "        pass\n"
+        "    elif method == 'config/read':\n"
+        "        send({'id': req_id, 'result': {'config': {}}})\n"
         "    elif method == 'thread/start':\n"
         "        send({'id': req_id, 'result': {'thread': {'id': 'thread-1'}}})\n"
         "    elif method == 'turn/start':\n"
@@ -356,6 +450,8 @@ async def test_app_server_codex_runner_translates_turn_notifications(
         "        send({'id': req_id, 'result': {'serverInfo': {'name': 'fake'}}})\n"
         "    elif method == 'initialized':\n"
         "        pass\n"
+        "    elif method == 'config/read':\n"
+        "        send({'id': req_id, 'result': {'config': {}}})\n"
         "    elif method == 'thread/start':\n"
         "        send({'id': req_id, 'result': {'thread': {'id': 'thread-1'}}})\n"
         "    elif method == 'turn/start':\n"

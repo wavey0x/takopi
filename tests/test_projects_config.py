@@ -38,9 +38,7 @@ def test_parse_projects_default_project_must_exist() -> None:
 def test_parse_projects_can_disable_worktrees() -> None:
     config = {
         **_base_config(),
-        "projects": {
-            "z80": {"path": "/tmp/repo", "worktrees_enabled": False}
-        },
+        "projects": {"z80": {"path": "/tmp/repo", "worktrees_enabled": False}},
     }
     settings = TakopiSettings.model_validate(config)
 

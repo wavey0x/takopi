@@ -1304,24 +1304,43 @@ class AppServerCodexRunner(ResumeTokenMixin, BaseRunner):
         await client.start()
 
         run_options = get_run_options()
+        cwd = str(get_run_base_dir() or Path.cwd())
+        # Reapply instance defaults even when a stored thread has an older model.
+        settings = await client.request(
+            "config/read", {"includeLayers": False, "cwd": cwd}
+        )
+        if not isinstance(settings, dict) or not isinstance(
+            settings.get("config"), dict
+        ):
+            raise RuntimeError("config/read returned no configuration")
+        model = settings["config"].get("model")
+        effort = settings["config"].get("model_reasoning_effort")
+        if run_options is not None:
+            model = run_options.model or model
+            effort = run_options.reasoning or effort
+        if any(
+            value is not None and not isinstance(value, str)
+            for value in (model, effort)
+        ):
+            raise RuntimeError("config/read returned invalid model settings")
+
         if resume is not None:
             thread_id = resume.value
             await client.ensure_thread_loaded(thread_id)
         else:
-            thread_params: dict[str, Any] = {"cwd": str(get_run_base_dir())}
-            if run_options is not None and run_options.model:
-                thread_params["model"] = str(run_options.model)
+            thread_params: dict[str, Any] = {"cwd": cwd}
+            if model:
+                thread_params["model"] = model
             thread_started = await client.thread_start(thread_params)
             thread = thread_started["thread"]
             thread_id = str(thread["id"])
 
         token = ResumeToken(engine=ENGINE, value=thread_id)
         turn_params: dict[str, Any] = {"input": [{"type": "text", "text": prompt}]}
-        if run_options is not None:
-            if run_options.model:
-                turn_params["model"] = str(run_options.model)
-            if run_options.reasoning:
-                turn_params["effort"] = str(run_options.reasoning)
+        if model:
+            turn_params["model"] = model
+        if effort:
+            turn_params["effort"] = effort
 
         turn_started = await client.turn_start(thread_id, turn_params)
         turn = turn_started.get("turn")
